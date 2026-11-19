@@ -13,11 +13,13 @@ import {
 import type { DevProcessSpec } from '../dev/project.js';
 import {
   resolveTestnetDeploymentPlan,
+  runDeploymentPreflight,
   validateDeploymentOutput,
   DEPLOYMENT_TERMINATION_GRACE_MS,
   DEPLOYMENT_TIMEOUT_MS,
   type DeployedContractData,
   type DeploymentOutput,
+  type DeploymentPreflightResult,
   type TestnetDeploymentInput,
 } from '../deployment/project.js';
 import { ValidationCliError } from '../errors/errors.js';
@@ -32,6 +34,9 @@ export interface DeployCommandOptions extends DevOrchestratorOptions {
   readonly resolvePlan?: (
     input: TestnetDeploymentInput,
   ) => readonly DevProcessSpec[];
+  readonly runPreflight?: (
+    input: TestnetDeploymentInput,
+  ) => DeploymentPreflightResult;
   readonly validateDeployment?:
     boolean | ((output: DeploymentOutput) => DeployedContractData);
 }
@@ -49,6 +54,7 @@ export function createDeployCommand(
     output = new TerminalOutput(),
     resolveConfig = resolveProjectConfig,
     resolvePlan = resolveTestnetDeploymentPlan,
+    runPreflight = runDeploymentPreflight,
     validateDeployment,
   } = options;
 
@@ -83,6 +89,25 @@ export function createDeployCommand(
       if (identity === undefined) {
         throw new ValidationCliError(
           'Deployment identity is required. Pass `--source <identity>` or set a named identity in stellarforge.config.json.',
+        );
+      }
+
+      // Local-only preflight: no subprocess, no network, no identity echo.
+      const preflight = runPreflight({
+        cwd: projectRoot,
+        network,
+        source: identity,
+      });
+      output.info('Deployment preflight:');
+      for (const check of preflight.checks) {
+        output.info(`  [${check.passed ? 'PASS' : 'FAIL'}] ${check.label}`);
+      }
+      if (!preflight.passed) {
+        const remediations = preflight.checks
+          .filter((check) => !check.passed && check.remediation !== undefined)
+          .map((check) => `- ${check.remediation}`);
+        throw new ValidationCliError(
+          `Deployment preflight failed. Remediation:\n${remediations.join('\n')}`,
         );
       }
 
